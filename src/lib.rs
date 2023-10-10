@@ -184,7 +184,7 @@ fn run_rustpython(vm: &VirtualMachine, run_mode: RunMode, quiet: bool) -> PyResu
                 vm.run_script(scope.clone(), &script)?;
             } else if !quiet {
                 println!(
-                    "Welcome to the magnificent Rust Python {} interpreter \u{1f631} \u{1f596}",
+                    "RustPython {}",//"Welcome to the magnificent Rust Python {} interpreter \u{1f631} \u{1f596}",
                     crate_version!()
                 );
             }

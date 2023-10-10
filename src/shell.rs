@@ -88,7 +88,7 @@ pub fn run_shell(vm: &VirtualMachine, scope: Scope) -> PyResult<()> {
     };
 
     if repl.load_history(&repl_history_path).is_err() {
-        println!("No previous history.");
+       //println!("No previous history.");
     }
 
     let mut continuing = false;

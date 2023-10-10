@@ -68,9 +68,9 @@ mod sys {
         }
     };
     #[pyattr(name = "ps1")]
-    const PS1: &str = ">>>>> ";
+    const PS1: &str = ">>> ";
     #[pyattr(name = "ps2")]
-    const PS2: &str = "..... ";
+    const PS2: &str = "... ";
     #[cfg(windows)]
     #[pyattr(name = "_vpath")]
     const VPATH: Option<&'static str> = None; // TODO: actual VPATH value
