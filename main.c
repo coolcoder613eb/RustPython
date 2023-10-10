@@ -49,7 +49,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    if (!wasiFileDescriptorAdd(-1, "/tmp", NULL)) {
+    if (!wasiFileDescriptorAdd(-1, "/", NULL)) {
         fprintf(stderr, "failed to add preopen\n");
         return 1;
     }
