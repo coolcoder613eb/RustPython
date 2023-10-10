@@ -2,6 +2,40 @@ use rustpython_vm::{Interpreter, Settings, VirtualMachine};
 
 pub type InitHook = Box<dyn FnOnce(&mut VirtualMachine)>;
 
+/// The convenient way to create [rustpython_vm::Interpreter] with stdlib and other stuffs.
+///
+/// Basic usage:
+/// ```
+/// let interpreter = rustpython::InterpreterConfig::new()
+///     .init_stdlib()
+///     .interpreter();
+/// ```
+///
+/// To override [rustpython_vm::Settings]:
+/// ```
+/// use rustpython_vm::Settings;
+/// // Override your settings here.
+/// let mut settings = Settings::default();
+/// settings.debug = true;
+/// // You may want to add paths to `rustpython_vm::Settings::path_list` to allow import python libraries.
+/// settings.path_list.push("".to_owned());  // add current working directory
+/// let interpreter = rustpython::InterpreterConfig::new()
+///     .settings(settings)
+///     .interpreter();
+/// ```
+///
+/// To add native modules:
+/// ```compile_fail
+/// let interpreter = rustpython::InterpreterConfig::new()
+///     .init_stdlib()
+///     .init_hook(Box::new(|vm| {
+///         vm.add_native_module(
+///             "your_module_name".to_owned(),
+///             Box::new(your_module::make_module),
+///         );
+///     }))
+///     .interpreter();
+/// ```
 #[derive(Default)]
 pub struct InterpreterConfig {
     settings: Option<Settings>,
@@ -50,8 +84,7 @@ pub fn init_stdlib(vm: &mut VirtualMachine) {
         let state = PyRc::get_mut(&mut vm.state).unwrap();
         let settings = &mut state.settings;
 
-        #[allow(clippy::needless_collect)] // false positive
-        let path_list: Vec<_> = settings.path_list.drain(..).collect();
+        let path_list = std::mem::take(&mut settings.path_list);
 
         // BUILDTIME_RUSTPYTHONPATH should be set when distributing
         if let Some(paths) = option_env!("BUILDTIME_RUSTPYTHONPATH") {
@@ -66,6 +99,6 @@ pub fn init_stdlib(vm: &mut VirtualMachine) {
                 .push(rustpython_pylib::LIB_PATH.to_owned())
         }
 
-        settings.path_list.extend(path_list.into_iter());
+        settings.path_list.extend(path_list);
     }
 }

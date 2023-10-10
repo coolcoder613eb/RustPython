@@ -63,6 +63,14 @@ pub use settings::{opts_with_clap, RunMode};
 pub fn run(init: impl FnOnce(&mut VirtualMachine) + 'static) -> ExitCode {
     env_logger::init();
 
+    // NOTE: This is not a WASI convention. But it will be convenient since POSIX shell always defines it.
+    #[cfg(target_os = "wasi")]
+    {
+        if let Ok(pwd) = env::var("PWD") {
+            let _ = env::set_current_dir(pwd);
+        };
+    }
+
     let (settings, run_mode) = opts_with_clap();
 
     // Be quiet if "quiet" arg is set OR stdin is not connected to a terminal
@@ -157,8 +165,17 @@ fn run_rustpython(vm: &VirtualMachine, run_mode: RunMode, quiet: bool) -> PyResu
 
     let scope = setup_main_module(vm)?;
 
-    let site_result = vm.import("site", None, 0);
+    if !vm.state.settings.safe_path {
+        // TODO: The prepending path depends on running mode
+        // See https://docs.python.org/3/using/cmdline.html#cmdoption-P
+        vm.run_code_string(
+            vm.new_scope_with_builtins(),
+            "import sys; sys.path.insert(0, '')",
+            "<embedded>".to_owned(),
+        )?;
+    }
 
+    let site_result = vm.import("site", None, 0);
     if site_result.is_err() {
         warn!(
             "Failed to import site, consider adding the Lib directory to your RUSTPYTHONPATH \

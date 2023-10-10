@@ -6,101 +6,67 @@ mod _winapi {
     use crate::{
         builtins::PyStrRef,
         common::windows::ToWideString,
-        convert::ToPyException,
+        convert::{ToPyException, ToPyResult},
         function::{ArgMapping, ArgSequence, OptionalArg},
         stdlib::os::errno_err,
+        windows::WindowsSysResult,
         PyObjectRef, PyResult, TryFromObject, VirtualMachine,
     };
     use std::ptr::{null, null_mut};
-    use winapi::shared::winerror;
-    use winapi::um::{
-        fileapi, handleapi, namedpipeapi, processenv, processthreadsapi, synchapi, winbase,
-        winnt::HANDLE,
-    };
     use windows::{
         core::PCWSTR,
-        Win32::Foundation::{HINSTANCE, MAX_PATH},
-        Win32::System::LibraryLoader::{GetModuleFileNameW, LoadLibraryW},
+        Win32::Foundation::{HANDLE, HINSTANCE, MAX_PATH},
     };
+    use windows_sys::Win32::Foundation::{BOOL, HANDLE as RAW_HANDLE};
 
     #[pyattr]
-    use winapi::{
-        shared::winerror::{
-            ERROR_ALREADY_EXISTS, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_MORE_DATA,
-            ERROR_NETNAME_DELETED, ERROR_NO_DATA, ERROR_NO_SYSTEM_RESOURCES,
-            ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT,
-            WAIT_TIMEOUT,
+    use windows_sys::Win32::{
+        Foundation::{
+            DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, ERROR_ALREADY_EXISTS, ERROR_BROKEN_PIPE,
+            ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_NETNAME_DELETED, ERROR_NO_DATA,
+            ERROR_NO_SYSTEM_RESOURCES, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY,
+            ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, STILL_ACTIVE,
+            WAIT_ABANDONED, WAIT_ABANDONED_0, WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
-        um::{
-            fileapi::OPEN_EXISTING,
-            memoryapi::{
-                FILE_MAP_ALL_ACCESS, FILE_MAP_COPY, FILE_MAP_EXECUTE, FILE_MAP_READ, FILE_MAP_WRITE,
+        Storage::FileSystem::{
+            FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
+            FILE_GENERIC_WRITE, FILE_TYPE_CHAR, FILE_TYPE_DISK, FILE_TYPE_PIPE, FILE_TYPE_REMOTE,
+            FILE_TYPE_UNKNOWN, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, PIPE_ACCESS_INBOUND, SYNCHRONIZE,
+        },
+        System::{
+            Console::{STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+            Memory::{
+                FILE_MAP_ALL_ACCESS, MEM_COMMIT, MEM_FREE, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE,
+                MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+                PAGE_EXECUTE_WRITECOPY, PAGE_GUARD, PAGE_NOACCESS, PAGE_NOCACHE, PAGE_READONLY,
+                PAGE_READWRITE, PAGE_WRITECOMBINE, PAGE_WRITECOPY, SEC_COMMIT, SEC_IMAGE,
+                SEC_LARGE_PAGES, SEC_NOCACHE, SEC_RESERVE, SEC_WRITECOMBINE,
             },
-            minwinbase::STILL_ACTIVE,
-            winbase::{
+            Pipes::{
+                PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+            },
+            SystemServices::LOCALE_NAME_MAX_LENGTH,
+            Threading::{
                 ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS,
                 CREATE_BREAKAWAY_FROM_JOB, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE,
-                CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS,
-                FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_TYPE_CHAR,
-                FILE_TYPE_DISK, FILE_TYPE_PIPE, FILE_TYPE_REMOTE, FILE_TYPE_UNKNOWN,
-                HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, INFINITE, NORMAL_PRIORITY_CLASS,
-                PIPE_ACCESS_DUPLEX, PIPE_ACCESS_INBOUND, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
-                PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, REALTIME_PRIORITY_CLASS, STARTF_USESHOWWINDOW,
-                STARTF_USESTDHANDLES, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
-                WAIT_ABANDONED, WAIT_ABANDONED_0, WAIT_OBJECT_0,
+                CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS, HIGH_PRIORITY_CLASS,
+                IDLE_PRIORITY_CLASS, INFINITE, NORMAL_PRIORITY_CLASS, PROCESS_DUP_HANDLE,
+                REALTIME_PRIORITY_CLASS, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES,
             },
-            winnt::{
-                DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, FILE_GENERIC_READ,
-                FILE_GENERIC_WRITE, GENERIC_READ, GENERIC_WRITE, LOCALE_NAME_MAX_LENGTH,
-                MEM_COMMIT, MEM_FREE, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, MEM_RESERVE,
-                PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY,
-                PAGE_GUARD, PAGE_NOACCESS, PAGE_NOCACHE, PAGE_READONLY, PAGE_READWRITE,
-                PAGE_WRITECOMBINE, PAGE_WRITECOPY, PROCESS_DUP_HANDLE, SEC_COMMIT, SEC_IMAGE,
-                SEC_LARGE_PAGES, SEC_NOCACHE, SEC_RESERVE, SEC_WRITECOMBINE, SYNCHRONIZE,
-            },
-            winuser::SW_HIDE,
         },
+        UI::WindowsAndMessaging::SW_HIDE,
     };
 
-    fn GetLastError() -> u32 {
-        unsafe { winapi::um::errhandlingapi::GetLastError() }
-    }
-
-    fn husize(h: HANDLE) -> usize {
-        h as usize
-    }
-
-    trait Convertible {
-        fn is_err(&self) -> bool;
-    }
-
-    impl Convertible for HANDLE {
-        fn is_err(&self) -> bool {
-            *self == handleapi::INVALID_HANDLE_VALUE
-        }
-    }
-    impl Convertible for i32 {
-        fn is_err(&self) -> bool {
-            *self == 0
-        }
-    }
-
-    fn cvt<T: Convertible>(vm: &VirtualMachine, res: T) -> PyResult<T> {
-        if res.is_err() {
-            Err(errno_err(vm))
-        } else {
-            Ok(res)
-        }
+    #[pyfunction]
+    fn CloseHandle(handle: HANDLE) -> WindowsSysResult<BOOL> {
+        WindowsSysResult(unsafe { windows_sys::Win32::Foundation::CloseHandle(handle.0) })
     }
 
     #[pyfunction]
-    fn CloseHandle(handle: usize, vm: &VirtualMachine) -> PyResult<()> {
-        cvt(vm, unsafe { handleapi::CloseHandle(handle as HANDLE) }).map(drop)
-    }
-
-    #[pyfunction]
-    fn GetStdHandle(std_handle: u32, vm: &VirtualMachine) -> PyResult<usize> {
-        cvt(vm, unsafe { processenv::GetStdHandle(std_handle) }).map(husize)
+    fn GetStdHandle(
+        std_handle: windows_sys::Win32::System::Console::STD_HANDLE,
+    ) -> WindowsSysResult<RAW_HANDLE> {
+        WindowsSysResult(unsafe { windows_sys::Win32::System::Console::GetStdHandle(std_handle) })
     }
 
     #[pyfunction]
@@ -108,51 +74,63 @@ mod _winapi {
         _pipe_attrs: PyObjectRef,
         size: u32,
         vm: &VirtualMachine,
-    ) -> PyResult<(usize, usize)> {
-        let mut read = null_mut();
-        let mut write = null_mut();
-        cvt(vm, unsafe {
-            namedpipeapi::CreatePipe(&mut read, &mut write, null_mut(), size)
-        })?;
-        Ok((read as usize, write as usize))
+    ) -> PyResult<(HANDLE, HANDLE)> {
+        let (read, write) = unsafe {
+            let mut read = std::mem::MaybeUninit::<isize>::uninit();
+            let mut write = std::mem::MaybeUninit::<isize>::uninit();
+            WindowsSysResult(windows_sys::Win32::System::Pipes::CreatePipe(
+                read.as_mut_ptr(),
+                write.as_mut_ptr(),
+                std::ptr::null(),
+                size,
+            ))
+            .to_pyresult(vm)?;
+            (read.assume_init(), write.assume_init())
+        };
+        Ok((HANDLE(read), HANDLE(write)))
     }
 
     #[pyfunction]
     fn DuplicateHandle(
-        (src_process, src): (usize, usize),
-        target_process: usize,
+        (src_process, src): (HANDLE, HANDLE),
+        target_process: HANDLE,
         access: u32,
-        inherit: i32,
+        inherit: BOOL,
         options: OptionalArg<u32>,
         vm: &VirtualMachine,
-    ) -> PyResult<usize> {
-        let mut target = null_mut();
-        cvt(vm, unsafe {
-            handleapi::DuplicateHandle(
-                src_process as _,
-                src as _,
-                target_process as _,
-                &mut target,
+    ) -> PyResult<HANDLE> {
+        let target = unsafe {
+            let mut target = std::mem::MaybeUninit::<isize>::uninit();
+            WindowsSysResult(windows_sys::Win32::Foundation::DuplicateHandle(
+                src_process.0,
+                src.0,
+                target_process.0,
+                target.as_mut_ptr(),
                 access,
                 inherit,
                 options.unwrap_or(0),
-            )
-        })?;
-        Ok(target as usize)
+            ))
+            .to_pyresult(vm)?;
+            target.assume_init()
+        };
+        Ok(HANDLE(target))
     }
 
     #[pyfunction]
-    fn GetCurrentProcess() -> usize {
-        unsafe { processthreadsapi::GetCurrentProcess() as usize }
+    fn GetCurrentProcess() -> HANDLE {
+        unsafe { windows::Win32::System::Threading::GetCurrentProcess() }
     }
 
     #[pyfunction]
-    fn GetFileType(h: usize, vm: &VirtualMachine) -> PyResult<u32> {
-        let ret = unsafe { fileapi::GetFileType(h as _) };
-        if ret == 0 && GetLastError() != 0 {
+    fn GetFileType(
+        h: HANDLE,
+        vm: &VirtualMachine,
+    ) -> PyResult<windows_sys::Win32::Storage::FileSystem::FILE_TYPE> {
+        let file_type = unsafe { windows_sys::Win32::Storage::FileSystem::GetFileType(h.0) };
+        if file_type == 0 && unsafe { windows_sys::Win32::Foundation::GetLastError() } != 0 {
             Err(errno_err(vm))
         } else {
-            Ok(ret)
+            Ok(file_type)
         }
     }
 
@@ -182,8 +160,9 @@ mod _winapi {
     fn CreateProcess(
         args: CreateProcessArgs,
         vm: &VirtualMachine,
-    ) -> PyResult<(usize, usize, u32, u32)> {
-        let mut si = winbase::STARTUPINFOEXW::default();
+    ) -> PyResult<(HANDLE, HANDLE, u32, u32)> {
+        let mut si: windows_sys::Win32::System::Threading::STARTUPINFOEXW =
+            unsafe { std::mem::zeroed() };
         si.StartupInfo.cb = std::mem::size_of_val(&si) as _;
 
         macro_rules! si_attr {
@@ -241,29 +220,27 @@ mod _winapi {
 
         let procinfo = unsafe {
             let mut procinfo = std::mem::MaybeUninit::uninit();
-            let ret = processthreadsapi::CreateProcessW(
+            WindowsSysResult(windows_sys::Win32::System::Threading::CreateProcessW(
                 app_name,
                 command_line,
-                null_mut(),
-                null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
                 args.inherit_handles,
                 args.creation_flags
-                    | winbase::EXTENDED_STARTUPINFO_PRESENT
-                    | winbase::CREATE_UNICODE_ENVIRONMENT,
+                    | windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT
+                    | windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT,
                 env as _,
                 current_dir,
-                &mut si as *mut winbase::STARTUPINFOEXW as _,
+                &mut si as *mut _ as *mut _,
                 procinfo.as_mut_ptr(),
-            );
-            if ret == 0 {
-                return Err(errno_err(vm));
-            }
+            ))
+            .into_pyresult(vm)?;
             procinfo.assume_init()
         };
 
         Ok((
-            procinfo.hProcess as usize,
-            procinfo.hThread as usize,
+            HANDLE(procinfo.hProcess),
+            HANDLE(procinfo.hThread),
             procinfo.dwProcessId,
             procinfo.dwThreadId,
         ))
@@ -310,7 +287,9 @@ mod _winapi {
     impl Drop for AttrList {
         fn drop(&mut self) {
             unsafe {
-                processthreadsapi::DeleteProcThreadAttributeList(self.attrlist.as_mut_ptr() as _)
+                windows_sys::Win32::System::Threading::DeleteProcThreadAttributeList(
+                    self.attrlist.as_mut_ptr() as *mut _,
+                )
             };
         }
     }
@@ -333,49 +312,51 @@ mod _winapi {
                     .transpose()?;
 
                 let attr_count = handlelist.is_some() as u32;
-                let mut size = 0;
-                let ret = unsafe {
-                    processthreadsapi::InitializeProcThreadAttributeList(
-                        null_mut(),
-                        attr_count,
-                        0,
-                        &mut size,
-                    )
+                let (result, mut size) = unsafe {
+                    let mut size = std::mem::MaybeUninit::uninit();
+                    let result = WindowsSysResult(
+                        windows_sys::Win32::System::Threading::InitializeProcThreadAttributeList(
+                            std::ptr::null_mut(),
+                            attr_count,
+                            0,
+                            size.as_mut_ptr(),
+                        ),
+                    );
+                    (result, size.assume_init())
                 };
-                if ret != 0 || GetLastError() != winerror::ERROR_INSUFFICIENT_BUFFER {
+                if !result.is_err()
+                    || unsafe { windows_sys::Win32::Foundation::GetLastError() }
+                        != windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER
+                {
                     return Err(errno_err(vm));
                 }
                 let mut attrlist = vec![0u8; size];
-                let ret = unsafe {
-                    processthreadsapi::InitializeProcThreadAttributeList(
-                        attrlist.as_mut_ptr() as _,
+                WindowsSysResult(unsafe {
+                    windows_sys::Win32::System::Threading::InitializeProcThreadAttributeList(
+                        attrlist.as_mut_ptr() as *mut _,
                         attr_count,
                         0,
                         &mut size,
                     )
-                };
-                if ret == 0 {
-                    return Err(errno_err(vm));
-                }
+                })
+                .into_pyresult(vm)?;
                 let mut attrs = AttrList {
                     handlelist,
                     attrlist,
                 };
                 if let Some(ref mut handlelist) = attrs.handlelist {
-                    let ret = unsafe {
-                        processthreadsapi::UpdateProcThreadAttribute(
+                    WindowsSysResult(unsafe {
+                        windows_sys::Win32::System::Threading::UpdateProcThreadAttribute(
                             attrs.attrlist.as_mut_ptr() as _,
                             0,
                             (2 & 0xffff) | 0x20000, // PROC_THREAD_ATTRIBUTE_HANDLE_LIST
                             handlelist.as_mut_ptr() as _,
                             (handlelist.len() * std::mem::size_of::<HANDLE>()) as _,
-                            null_mut(),
-                            null_mut(),
+                            std::ptr::null_mut(),
+                            std::ptr::null(),
                         )
-                    };
-                    if ret == 0 {
-                        return Err(errno_err(vm));
-                    }
+                    })
+                    .into_pyresult(vm)?;
                 }
                 Ok(attrs)
             })
@@ -383,9 +364,9 @@ mod _winapi {
     }
 
     #[pyfunction]
-    fn WaitForSingleObject(h: usize, ms: u32, vm: &VirtualMachine) -> PyResult<u32> {
-        let ret = unsafe { synchapi::WaitForSingleObject(h as _, ms) };
-        if ret == winbase::WAIT_FAILED {
+    fn WaitForSingleObject(h: HANDLE, ms: u32, vm: &VirtualMachine) -> PyResult<u32> {
+        let ret = unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(h.0, ms) };
+        if ret == windows_sys::Win32::Foundation::WAIT_FAILED {
             Err(errno_err(vm))
         } else {
             Ok(ret)
@@ -393,27 +374,33 @@ mod _winapi {
     }
 
     #[pyfunction]
-    fn GetExitCodeProcess(h: usize, vm: &VirtualMachine) -> PyResult<u32> {
-        let mut ec = 0;
-        cvt(vm, unsafe {
-            processthreadsapi::GetExitCodeProcess(h as _, &mut ec)
-        })?;
-        Ok(ec)
+    fn GetExitCodeProcess(h: HANDLE, vm: &VirtualMachine) -> PyResult<u32> {
+        unsafe {
+            let mut ec = std::mem::MaybeUninit::uninit();
+            WindowsSysResult(windows_sys::Win32::System::Threading::GetExitCodeProcess(
+                h.0,
+                ec.as_mut_ptr(),
+            ))
+            .to_pyresult(vm)?;
+            Ok(ec.assume_init())
+        }
     }
 
     #[pyfunction]
-    fn TerminateProcess(h: usize, exit_code: u32, vm: &VirtualMachine) -> PyResult<()> {
-        cvt(vm, unsafe {
-            processthreadsapi::TerminateProcess(h as _, exit_code)
+    fn TerminateProcess(h: HANDLE, exit_code: u32) -> WindowsSysResult<BOOL> {
+        WindowsSysResult(unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(h.0, exit_code)
         })
-        .map(drop)
     }
 
     // TODO: ctypes.LibraryLoader.LoadLibrary
     #[allow(dead_code)]
     fn LoadLibrary(path: PyStrRef, vm: &VirtualMachine) -> PyResult<isize> {
         let path = path.as_str().to_wides_with_nul();
-        let handle = unsafe { LoadLibraryW(PCWSTR::from_raw(path.as_ptr())).unwrap() };
+        let handle = unsafe {
+            windows::Win32::System::LibraryLoader::LoadLibraryW(PCWSTR::from_raw(path.as_ptr()))
+                .unwrap()
+        };
         if handle.is_invalid() {
             return Err(vm.new_runtime_error("LoadLibrary failed".to_owned()));
         }
@@ -425,7 +412,8 @@ mod _winapi {
         let mut path: Vec<u16> = vec![0; MAX_PATH as usize];
         let handle = HINSTANCE(handle);
 
-        let length = unsafe { GetModuleFileNameW(handle, &mut path) };
+        let length =
+            unsafe { windows::Win32::System::LibraryLoader::GetModuleFileNameW(handle, &mut path) };
         if length == 0 {
             return Err(vm.new_runtime_error("GetModuleFileName failed".to_owned()));
         }

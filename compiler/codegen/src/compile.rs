@@ -888,6 +888,7 @@ impl Compiler {
             Stmt::Pass(_) => {
                 // No need to emit any code here :)
             }
+            Stmt::TypeAlias(_) => {}
         }
         Ok(())
     }
@@ -975,7 +976,7 @@ impl Compiler {
             .chain(&args.posonlyargs)
             .chain(&args.args)
             .map(|arg| arg.as_arg())
-            .chain(kw_without_defaults.into_iter())
+            .chain(kw_without_defaults)
             .chain(kw_with_defaults.into_iter().map(|(arg, _)| arg));
         for name in args_iter {
             self.varname(name.arg.as_str())?;

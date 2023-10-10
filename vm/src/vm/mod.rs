@@ -223,12 +223,31 @@ impl VirtualMachine {
     #[cfg(feature = "encodings")]
     fn import_encodings(&mut self) -> PyResult<()> {
         self.import("encodings", None, 0).map_err(|import_err| {
-            let err = self.new_runtime_error(
-                "Could not import encodings. Is your RUSTPYTHONPATH set? If you don't have \
-                    access to a consistent external environment (e.g. if you're embedding \
-                    rustpython in another application), try enabling the freeze-stdlib feature"
-                    .to_owned(),
+            let rustpythonpath_env = std::env::var("RUSTPYTHONPATH").ok();
+            let pythonpath_env = std::env::var("PYTHONPATH").ok();
+            let env_set = rustpythonpath_env.as_ref().is_some() || pythonpath_env.as_ref().is_some();
+            let path_contains_env = self.state.settings.path_list.iter().any(|s| {
+                Some(s.as_str()) == rustpythonpath_env.as_deref() || Some(s.as_str()) == pythonpath_env.as_deref()
+            });
+
+            let guide_message = if !env_set {
+                "Neither RUSTPYTHONPATH nor PYTHONPATH is set. Try setting one of them to the stdlib directory."
+            } else if path_contains_env {
+                "RUSTPYTHONPATH or PYTHONPATH is set, but it doesn't contain the encodings library. If you are customizing the RustPython vm/interpreter, try adding the stdlib directory to the path. If you are developing the RustPython interpreter, it might be a bug during development."
+            } else {
+                "RUSTPYTHONPATH or PYTHONPATH is set, but it wasn't loaded to `Settings::path_list`. If you are going to customize the RustPython vm/interpreter, those environment variables are not loaded in the Settings struct by default. Please try creating a customized instance of the Settings struct. If you are developing the RustPython interpreter, it might be a bug during development."
+            };
+
+            let msg = format!(
+                "RustPython could not import the encodings module. It usually means something went wrong. Please carefully read the following messages and follow the steps.\n\
+                \n\
+                {guide_message}\n\
+                If you don't have access to a consistent external environment (e.g. targeting wasm, embedding \
+                    rustpython in another application), try enabling the `freeze-stdlib` feature.\n\
+                If this is intended and you want to exclude the encodings module from your interpreter, please remove the `encodings` feature from `rustpython-vm` crate."
             );
+
+            let err = self.new_runtime_error(msg);
             err.set_cause(Some(import_err));
             err
         })?;
@@ -237,11 +256,13 @@ impl VirtualMachine {
 
     fn import_utf8_encodings(&mut self) -> PyResult<()> {
         import::import_frozen(self, "codecs")?;
-        let encoding_module_name = if cfg!(feature = "freeze-stdlib") {
-            "encodings.utf_8"
-        } else {
-            "encodings_utf_8"
-        };
+        // FIXME: See corresponding part of `core_frozen_inits`
+        // let encoding_module_name = if cfg!(feature = "freeze-stdlib") {
+        //     "encodings.utf_8"
+        // } else {
+        //     "encodings_utf_8"
+        // };
+        let encoding_module_name = "encodings_utf_8";
         let encoding_module = import::import_frozen(self, encoding_module_name)?;
         let getregentry = encoding_module.get_attr("getregentry", self)?;
         let codec_info = getregentry.call((), self)?;
@@ -257,9 +278,6 @@ impl VirtualMachine {
         if self.initialized {
             panic!("Double Initialize Error");
         }
-
-        // add the current directory to sys.path
-        self.state_mut().settings.path_list.insert(0, "".to_owned());
 
         stdlib::builtins::init_module(self, &self.builtins);
         stdlib::sys::init_module(self, &self.sys_module, &self.builtins);
@@ -318,9 +336,21 @@ impl VirtualMachine {
         }
 
         #[cfg(feature = "encodings")]
-        if let Err(e) = self.import_encodings() {
-            eprintln!("encodings initialization failed. Only utf-8 encoding will be supported.");
-            self.print_exception(e);
+        if cfg!(feature = "freeze-stdlib") || !self.state.settings.path_list.is_empty() {
+            if let Err(e) = self.import_encodings() {
+                eprintln!(
+                    "encodings initialization failed. Only utf-8 encoding will be supported."
+                );
+                self.print_exception(e);
+            }
+        } else {
+            // Here may not be the best place to give general `path_list` advice,
+            // but bare rustpython_vm::VirtualMachine users skipped proper settings must hit here while properly setup vm never enters here.
+            eprintln!(
+                "feature `encodings` is enabled but `settings.path_list` is empty. \
+                Please add the library path to `settings.path_list`. If you intended to disable the entire standard library (including the `encodings` feature), please also make sure to disable the `encodings` feature.\n\
+                Tip: You may also want to add `\"\"` to `settings.path_list` in order to enable importing from the current working directory."
+            );
         }
 
         self.initialized = true;
@@ -868,7 +898,9 @@ fn core_frozen_inits() -> impl Iterator<Item = (&'static str, FrozenModule)> {
 
     // core stdlib Python modules that the vm calls into, but are still used in Python
     // application code, e.g. copyreg
-    #[cfg(not(feature = "freeze-stdlib"))]
+    // FIXME: Initializing core_modules here results duplicated frozen module generation for core_modules.
+    // We need a way to initialize this modules for both `Interpreter::without_stdlib()` and `InterpreterConfig::new().init_stdlib().interpreter()`
+    // #[cfg(not(feature = "freeze-stdlib"))]
     ext_modules!(
         iter,
         dir = "./Lib/core_modules",

@@ -37,6 +37,9 @@ pub struct Settings {
     /// -B
     pub dont_write_bytecode: bool,
 
+    /// -P
+    pub safe_path: bool,
+
     /// -b
     pub bytes_warning: u64,
 
@@ -86,10 +89,9 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn with_path(path: String) -> Self {
-        let mut settings = Self::default();
-        settings.path_list.push(path);
-        settings
+    pub fn with_path(mut self, path: String) -> Self {
+        self.path_list.push(path);
+        self
     }
 }
 
@@ -108,6 +110,7 @@ impl Default for Settings {
             verbose: 0,
             quiet: false,
             dont_write_bytecode: false,
+            safe_path: false,
             bytes_warning: 0,
             xopts: vec![],
             isolated: false,

@@ -127,7 +127,11 @@ jobs:
         shell: bash
         run: |
           choco install llvm openssl --no-progress
-          echo "OPENSSL_DIR=C:\Program Files\OpenSSL" >>$GITHUB_ENV
+          if [[ -d "C:\Program Files\OpenSSL-Win64" ]]; then
+            echo "OPENSSL_DIR=C:\Program Files\OpenSSL-Win64" >> $GITHUB_ENV
+          else
+            echo "OPENSSL_DIR=C:\Program Files\OpenSSL" >> $GITHUB_ENV
+          fi
         if: runner.os == 'Windows'
       - name: Set up the Mac environment
         run: brew install autoconf automake libtool
@@ -252,7 +256,11 @@ jobs:
         shell: bash
         run: |
           choco install llvm openssl --no-progress
-          echo "OPENSSL_DIR=C:\Program Files\OpenSSL" >>$GITHUB_ENV
+          if [[ -d "C:\Program Files\OpenSSL-Win64" ]]; then
+            echo "OPENSSL_DIR=C:\Program Files\OpenSSL-Win64" >> $GITHUB_ENV
+          else
+            echo "OPENSSL_DIR=C:\Program Files\OpenSSL" >> $GITHUB_ENV
+          fi
         if: runner.os == 'Windows'
       - name: Set up the Mac environment
         run: brew install autoconf automake libtool openssl@3
@@ -308,14 +316,14 @@ jobs:
         with:
             components: rustfmt, clippy
       - name: run rustfmt
-        run: cargo fmt --all -- --check
+        run: cargo fmt --check
       - name: run clippy on wasm
         run: cargo clippy --manifest-path=wasm/lib/Cargo.toml -- -Dwarnings
       - uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: install ruff
-        run: python -m pip install ruff
+        run: python -m pip install ruff==0.0.291 # astral-sh/ruff#7778
       - name: run python lint
         run: ruff extra_tests wasm examples  --exclude='./.*',./Lib,./vm/Lib,./benches/ --select=E9,F63,F7,F82 --show-source
       - name: install prettier

@@ -1,15 +1,23 @@
 fn main() {
-    process_python_libs("../Lib/python_builtins/*");
+    process_python_libs("../vm/Lib/python_builtins/*");
 
     #[cfg(not(feature = "stdlib"))]
-    process_python_libs("../Lib/core_modules/*");
-
-    #[cfg(feature = "stdlib")]
-    process_python_libs("../../Lib/**/*");
+    process_python_libs("../vm/Lib/core_modules/*");
+    #[cfg(feature = "freeze-stdlib")]
+    if cfg!(windows) {
+        process_python_libs("../Lib/**/*");
+    } else {
+        process_python_libs("./Lib/**/*");
+    }
 
     if cfg!(windows) {
         if let Ok(real_path) = std::fs::read_to_string("Lib") {
-            println!("rustc-env:win_lib_path={real_path:?}");
+            let canonicalized_path = std::fs::canonicalize(real_path)
+                .expect("failed to resolve RUSTPYTHONPATH during build time");
+            println!(
+                "cargo:rustc-env=win_lib_path={}",
+                canonicalized_path.to_str().unwrap()
+            );
         }
     }
 }
