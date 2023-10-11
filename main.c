@@ -48,8 +48,18 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "failed to init WASI\n");
         return 1;
     }
+#ifdef __MSDOS__
+    if (!wasiFileDescriptorAdd(-1, "C:\\", NULL)) {
+        fprintf(stderr, "failed to add preopen\n");
+        return 1;
+    }
+#endif
+    if (!wasiFileDescriptorAdd(-2, ".", NULL)) {
+        fprintf(stderr, "failed to add preopen\n");
+        return 1;
+    }
 
-    if (!wasiFileDescriptorAdd(-1, "/", NULL)) {
+    if (!wasiFileDescriptorAdd(-3, "/", NULL)) {
         fprintf(stderr, "failed to add preopen\n");
         return 1;
     }
